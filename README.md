@@ -1,4 +1,4 @@
-# Music HTML Widget by CrossWax
+# VLC "Now Playing" HTML Widget
 
 A VLC Media Player extension that generates a **400 × 120 px HTML overlay** showing
 the currently playing track on a **spinning vinyl disc** — inspired by Spotify streamer widgets.
