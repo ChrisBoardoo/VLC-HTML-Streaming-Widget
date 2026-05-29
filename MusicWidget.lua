@@ -343,7 +343,7 @@ setInterval(poll, 1000);
 -- Extension state
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local VERSION = "1.6.0"
+local VERSION = "1.6.3"
 
 local dlg        = nil
 local lbl_status = nil
@@ -363,11 +363,6 @@ local play_state = "stopped"
 -- (which is usually the one with the correct artpath). A counter guarantees every
 -- write produces a unique ts regardless of wall-clock resolution.
 local write_seq = 0
-
--- Cache for the PowerShell art-cache scan (method 5b).
--- Cleared on input_changed so each new track triggers a fresh scan.
-local art_ps_key = ""   -- "artist|album" of last scan
-local art_ps_url = ""   -- result of last scan
 
 -- Tracks the last URI for which we attempted direct embedded-art extraction.
 -- Prevents re-reading the media file on every meta_changed for the same track.
@@ -434,9 +429,7 @@ end
 
 function input_changed()
     play_state = "playing"
-    art_ps_key        = ""  -- invalidate PS scan cache for new track
-    art_ps_url        = ""
-    art_extracted_uri = ""  -- invalidate embedded-art extraction cache for new track
+    art_extracted_uri = ""  -- new track → re-run embedded-art extraction
     do_update()
 end
 
@@ -489,14 +482,22 @@ function do_update_inner()
 
     local art_file = copy_artwork(arturl)
 
-    -- If no arturl was found (VLC 3.023 doesn't surface it), extract art
-    -- directly from the media file. Only runs once per unique track URI.
+    -- "Smells Like Teen Spirit" — if VLC won't give us the art URL, we'll
+    -- rip the JPEG straight out of the file ourselves.
+    --
+    -- Guard: art_extracted_uri is ONLY set on success. If extraction fails
+    -- (file not ready when input_changed fires, file format unsupported, etc.)
+    -- the URI stays unset so the NEXT meta_changed call gets another shot.
+    -- Once it succeeds we stop retrying for that track.
+    local embedded_ok = false
     if arturl == "" then
         local uri = ""
         pcall(function() uri = item:uri() or "" end)
         if uri ~= "" and uri ~= art_extracted_uri then
-            art_extracted_uri = uri
-            pcall(function() extract_embedded_art(uri) end)
+            pcall(function() embedded_ok = extract_embedded_art(uri) end)
+            if embedded_ok then
+                art_extracted_uri = uri   -- lock in: don't re-read this track
+            end
         end
     end
 
@@ -509,11 +510,16 @@ function do_update_inner()
     }, play_state)
 
     local display = (artist ~= "") and (artist .. " \xe2\x80\x94 " .. title) or title
-    -- Show arturl type in the status label so problems are immediately visible
-    local art_hint = ""
-    if     arturl == ""                    then art_hint = " [no art URL]"
-    elseif arturl:lower():sub(1,7) == "file://" then art_hint = " [art\xe2\x9c\x93]"
-    else   art_hint = " [art:" .. arturl:sub(1, 14) .. "]"
+    local art_hint
+    if arturl ~= "" then
+        art_hint = arturl:lower():sub(1,7) == "file://" and " [art\xe2\x9c\x93]"
+                or (" [art:" .. arturl:sub(1,14) .. "]")
+    elseif embedded_ok then
+        art_hint = " [emb\xe2\x9c\x93]"   -- extracted from file directly
+    elseif art_extracted_uri ~= "" then
+        art_hint = " [no art]"             -- tried extraction, nothing found
+    else
+        art_hint = " [no art URL]"
     end
     set_status((play_state == "paused" and "|| " or "") .. display .. art_hint)
 end
@@ -618,146 +624,205 @@ end
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Direct embedded-art extraction from media files
--- Used when VLC doesn't surface the art URL (VLC 3.023 behaviour).
--- Supports: MP3/ID3v2 (APIC frame), FLAC (PICTURE block).
--- No subprocess, no VLC API — pure Lua binary file I/O.
+-- "I want my MTV" — but I'll settle for JPEG bytes from an ID3 tag.
+--
+-- VLC 3.023 doesn't write embedded art to its file cache, and item:arturl()
+-- returns nil. So we read the media file ourselves — pure Lua binary I/O,
+-- zero subprocesses, zero popups.
+--
+-- Strategy: don't parse MIME types or text encodings (fragile). Instead,
+-- hunt directly for image magic bytes inside the frame data:
+--   JPEG: \xFF\xD8\xFF  (bytes 255 216 255 in Lua 5.1 decimal escapes)
+--   PNG:  \x89PNG       (bytes 137 80 78 71)
+-- Whatever bytes precede the magic are APIC header gunk we don't care about.
 -- ─────────────────────────────────────────────────────────────────────────────
 
--- Entry point: called from do_update_inner when arturl == "".
+-- Lua 5.1 (VLC's runtime) has no \xNN hex escapes — use decimal \NNN.
+local JPEG_MAGIC = "\255\216\255"   -- FF D8 FF  — "We didn't start the fire"
+local PNG_MAGIC  = "\137PNG"        -- 89 50 4E 47
+
+-- Writes image bytes to artwork.jpg. Returns true on success.
+local function write_art(img)
+    if not img or #img < 128 then return false end
+    local f = io.open(out_dir .. "artwork.jpg", "wb")
+    if not f then return false end
+    f:write(img); f:close()
+    return true
+end
+
+-- Find JPEG or PNG magic inside any binary blob and return from that offset.
+local function extract_image(blob)
+    local j = blob:find(JPEG_MAGIC, 1, true)
+    local p = blob:find(PNG_MAGIC,  1, true)
+    local pos = (j and p) and math.min(j, p) or j or p
+    if pos then return blob:sub(pos) end
+    return nil
+end
+
+-- ── MP3 / ID3v2 ──────────────────────────────────────────────────────────────
+-- "It's the end of the world as we know it (and I feel fine)" about parsing ID3.
+--
+-- Handles all three ID3v2 generations:
+--   v2.2  — 6-byte frame headers, 3-char IDs, picture frame = "PIC"
+--   v2.3  — 10-byte frame headers, 4-char IDs, picture frame = "APIC", plain sizes
+--   v2.4  — 10-byte frame headers, 4-char IDs, picture frame = "APIC", syncsafe sizes
+local function id3v2_extract(path)
+    local f = io.open(path, "rb")
+    if not f then return false end
+
+    -- "Are you gonna go my way?" — first check the magic
+    if f:read(3) ~= "ID3" then f:close(); return false end
+
+    local hdr = f:read(7)
+    if not hdr or #hdr < 7 then f:close(); return false end
+
+    local ver    = hdr:byte(1)
+    -- Syncsafe integer: each byte contributes only 7 bits
+    local tag_sz = hdr:byte(4)*0x200000 + hdr:byte(5)*0x4000
+                 + hdr:byte(6)*0x80     + hdr:byte(7)
+
+    -- "Don't stop believin'" — but do stop at 50 MB
+    if tag_sz < 1 or tag_sz > 50*1024*1024 then f:close(); return false end
+
+    local data = f:read(tag_sz)
+    f:close()
+    if not data then return false end
+
+    local pos = 1
+
+    if ver == 2 then
+        -- ── ID3v2.2: 6-byte headers, 3-char IDs ─────────────────────────────
+        -- "Video Killed the Radio Star" — and ID3v2.2 tagged the MP3 era.
+        while pos + 6 <= #data do
+            if data:byte(pos) == 0 then break end
+            local b1,b2,b3 = data:byte(pos+3), data:byte(pos+4), data:byte(pos+5)
+            local fsz = b1*0x10000 + b2*0x100 + b3
+            if fsz < 1 or pos + 6 + fsz > #data + 1 then break end
+            if data:sub(pos, pos+2) == "PIC" then
+                return write_art(extract_image(data:sub(pos+6, pos+5+fsz)))
+            end
+            pos = pos + 6 + fsz
+        end
+    else
+        -- ── ID3v2.3 / ID3v2.4: 10-byte headers, 4-char IDs ──────────────────
+        -- "Everybody wants to rule the world" — we just want the APIC frame.
+        while pos + 10 <= #data do
+            if data:byte(pos) == 0 then break end
+            local b1,b2,b3,b4 = data:byte(pos+4), data:byte(pos+5),
+                                 data:byte(pos+6), data:byte(pos+7)
+            if not (b1 and b2 and b3 and b4) then break end
+            -- v2.4 uses syncsafe sizes; v2.3 uses plain big-endian
+            local fsz = ver >= 4
+                and (b1*0x200000 + b2*0x4000 + b3*0x80 + b4)
+                 or (b1*0x1000000 + b2*0x10000 + b3*0x100 + b4)
+            if fsz < 1 or pos + 10 + fsz > #data + 1 then break end
+            if data:sub(pos, pos+3) == "APIC" then
+                return write_art(extract_image(data:sub(pos+10, pos+9+fsz)))
+            end
+            pos = pos + 10 + fsz
+        end
+    end
+    return false
+end
+
+-- ── M4A / MP4 ────────────────────────────────────────────────────────────────
+-- "Don't You (Forget About Me)" — iTunes users deserve artwork too.
+--
+-- Cover art lives at: moov → ilst → covr → data (image bytes follow).
+-- iTunes puts moov AFTER the mdat audio block (end of file).
+-- Other encoders put moov BEFORE mdat (start of file).
+-- We read 1.5 MB from both ends to cover both layouts without loading the
+-- entire (potentially 50+ MB) audio file into memory.
+local function mp4_extract(path)
+    local f = io.open(path, "rb")
+    if not f then return false end
+
+    -- Verify ftyp box (MP4 magic at bytes 5–8)
+    local lead = f:read(8)
+    if not lead or lead:sub(5,8) ~= "ftyp" then f:close(); return false end
+
+    local CHUNK = 1536 * 1024   -- 1.5 MB per read
+
+    -- Helper: search a chunk for "covr" and extract the image that follows
+    local function scan(chunk)
+        if not chunk then return false end
+        local covr = chunk:find("covr", 1, true)
+        if not covr then return false end
+        return write_art(extract_image(chunk:sub(covr)))
+    end
+
+    -- Try start of file (moov-first layout)
+    f:seek("set", 0)
+    if scan(f:read(CHUNK)) then f:close(); return true end
+
+    -- Try end of file (iTunes moov-last layout)
+    local file_sz = f:seek("end", 0)
+    if file_sz and file_sz > CHUNK then
+        f:seek("end", -CHUNK)
+        if scan(f:read(CHUNK)) then f:close(); return true end
+    end
+
+    f:close()
+    return false
+end
+
+-- ── FLAC ─────────────────────────────────────────────────────────────────────
+-- "I Will Always Love You" — to FLAC's lossless PICTURE block (type 6).
+local function flac_extract(path)
+    local f = io.open(path, "rb")
+    if not f then return false end
+
+    if f:read(4) ~= "fLaC" then f:close(); return false end
+
+    while true do
+        local hdr = f:read(4)
+        if not hdr or #hdr < 4 then break end
+        local b0      = hdr:byte(1)
+        local is_last = math.floor(b0 / 128) == 1
+        local blk_typ = b0 % 128
+        local blk_sz  = hdr:byte(2)*0x10000 + hdr:byte(3)*0x100 + hdr:byte(4)
+
+        if blk_typ == 6 then   -- PICTURE — "One is the loneliest number"
+            local bd = f:read(blk_sz)
+            f:close()
+            if bd then
+                -- Magic-byte search bypasses all the length-prefixed fields
+                return write_art(extract_image(bd))
+            end
+            return false
+        end
+
+        f:seek("cur", blk_sz)
+        if is_last then break end
+    end
+    f:close()
+    return false
+end
+
+-- ── Entry point ───────────────────────────────────────────────────────────────
+-- Called from do_update_inner when arturl == "".
+-- Returns true if artwork.jpg was successfully written.
 function extract_embedded_art(uri)
     local lp = uri:lower()
     local path = uri
     if     lp:sub(1,8) == "file:///" then path = path:sub(9)
     elseif lp:sub(1,7) == "file://"  then path = path:sub(8)
-    else   return
+    else   return false
     end
     path = path:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
     path = path:gsub("/", "\\")
 
     local ext = path:lower():match("%.([^%.\\]+)$") or ""
-    if     ext == "mp3" or ext == "mp2" or ext == "aac" or ext == "m4a" then
-        id3v2_extract(path)
+    if ext == "mp3" or ext == "mp2" or ext == "aac" then
+        return id3v2_extract(path)
+    elseif ext == "m4a" or ext == "mp4" then
+        -- MP4 container (iTunes / Apple); falls back to ID3v2 in case it's
+        -- a non-standard M4A that was tagged with ID3v2 instead
+        return mp4_extract(path) or id3v2_extract(path)
     elseif ext == "flac" then
-        flac_extract(path)
+        return flac_extract(path)
     end
-end
-
--- ID3v2 parser: finds the first APIC (attached picture) frame and writes it.
-function id3v2_extract(path)
-    local f = io.open(path, "rb")
-    if not f then return end
-
-    if f:read(3) ~= "ID3" then f:close(); return end
-
-    local meta = f:read(7)   -- version(1) minor(1) flags(1) size(4)
-    if not meta or #meta < 7 then f:close(); return end
-
-    local ver = meta:byte(1)
-    local sz  = meta:byte(4)*0x200000 + meta:byte(5)*0x4000
-              + meta:byte(6)*0x80     + meta:byte(7)
-    if sz < 1 or sz > 30*1024*1024 then f:close(); return end
-
-    local data = f:read(sz)
-    f:close()
-    if not data then return end
-
-    local pos = 1
-    while pos + 9 < #data do
-        local id = data:sub(pos, pos+3)
-        if id:byte(1) == 0 then break end
-
-        local b1,b2,b3,b4 = data:byte(pos+4), data:byte(pos+5),
-                            data:byte(pos+6), data:byte(pos+7)
-        local fsz
-        if ver >= 4 then
-            fsz = b1*0x200000 + b2*0x4000 + b3*0x80 + b4
-        else
-            fsz = b1*0x1000000 + b2*0x10000 + b3*0x100 + b4
-        end
-        if fsz <= 0 or fsz > sz then break end
-
-        if id == "APIC" then
-            local img = apic_image(data:sub(pos+10, pos+9+fsz))
-            if img and #img > 64 then
-                local dst = io.open(out_dir .. "artwork.jpg", "wb")
-                if dst then dst:write(img); dst:close() end
-            end
-            return
-        end
-
-        pos = pos + 10 + fsz
-    end
-end
-
--- Extracts raw image bytes from an APIC frame payload.
-function apic_image(fd)
-    if #fd < 5 then return nil end
-    local enc = fd:byte(1)
-    local p = 2
-    while p <= #fd and fd:byte(p) ~= 0 do p = p + 1 end   -- skip MIME
-    p = p + 1   -- skip MIME null
-    p = p + 1   -- skip picture-type byte
-    if p > #fd then return nil end
-    if enc == 1 or enc == 2 then   -- UTF-16: double-null terminator
-        while p + 1 <= #fd do
-            if fd:byte(p) == 0 and fd:byte(p+1) == 0 then p = p+2; break end
-            p = p + 2
-        end
-    else                            -- Latin-1 / UTF-8: single-null terminator
-        while p <= #fd and fd:byte(p) ~= 0 do p = p + 1 end
-        p = p + 1
-    end
-    if p > #fd then return nil end
-    return fd:sub(p)
-end
-
--- FLAC parser: finds the PICTURE metadata block and writes the image.
-function flac_extract(path)
-    local f = io.open(path, "rb")
-    if not f then return end
-    if f:read(4) ~= "fLaC" then f:close(); return end
-
-    while true do
-        local hdr = f:read(4)
-        if not hdr or #hdr < 4 then break end
-        local b0 = hdr:byte(1)
-        local is_last  = math.floor(b0 / 128) == 1
-        local blk_type = b0 % 128
-        local blk_size = hdr:byte(2)*0x10000 + hdr:byte(3)*0x100 + hdr:byte(4)
-
-        if blk_type == 6 then   -- PICTURE block
-            local bd = f:read(blk_size)
-            if bd and #bd > 32 then
-                -- PICTURE: type(4) mime_len(4) mime(...) desc_len(4) desc(...)
-                --          width(4) height(4) depth(4) colors(4) data_len(4) data(...)
-                local off = 5   -- skip picture type
-                local mime_len = bd:byte(off)*0x1000000 + bd:byte(off+1)*0x10000
-                              + bd:byte(off+2)*0x100    + bd:byte(off+3)
-                off = off + 4 + mime_len
-                if off + 4 > #bd then break end
-                local desc_len = bd:byte(off)*0x1000000 + bd:byte(off+1)*0x10000
-                              + bd:byte(off+2)*0x100    + bd:byte(off+3)
-                off = off + 4 + desc_len + 16  -- skip desc + w/h/depth/colors
-                if off + 4 > #bd then break end
-                local img_len = bd:byte(off)*0x1000000 + bd:byte(off+1)*0x10000
-                             + bd:byte(off+2)*0x100    + bd:byte(off+3)
-                off = off + 4
-                if off + img_len - 1 <= #bd then
-                    local img = bd:sub(off, off + img_len - 1)
-                    if #img > 64 then
-                        local dst = io.open(out_dir .. "artwork.jpg", "wb")
-                        if dst then dst:write(img); dst:close() end
-                    end
-                end
-            end
-            f:close(); return
-        else
-            f:seek("cur", blk_size)
-        end
-
-        if is_last then break end
-    end
-    f:close()
+    return false
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
