@@ -36,10 +36,7 @@ the currently playing track on a **spinning vinyl disc** — inspired by Spotify
 
 1. Copy `MusicWidget.lua` to:
    ```
-   %APPDATA%\vlc\lua\extensions\
-   ```
-   Create the folder if it does not exist (`%APPDATA%` is typically
-   `C:\Users\YourName\AppData\Roaming`).
+   VideoLAN\VLC\lua\extensions
 
 2. Start (or restart) VLC.
 
@@ -65,7 +62,7 @@ On first activation the extension creates:
 3. Set **Width = 400** and **Height = 120**.
 4. The overlay updates automatically — no page reload needed between tracks.
 
-> You can also open `widget.html` directly in **Chrome or Edge** to preview it
+> You can also open `widget.html` directly in **Chrome or Firefox** to preview it
 > while VLC is playing.
 
 ---
