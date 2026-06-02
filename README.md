@@ -1,5 +1,11 @@
 # VLC "Now Playing" HTML Widget
 
+You think the future of Music is Local, you're a Master of "Track 6", you love VLC ?
+You're in the right place ! 
+
+With the multiplication of sources (Epidemic Sounds/ Suno / Local Rips) and the artists leaving major Music Streaming platforms 
+I'm proud to present "VLC HTML Streaming Widget" !
+
 A VLC Media Player extension that generates a **400 × 120 px HTML overlay** showing
 the currently playing track on a **spinning vinyl disc** — inspired by Spotify streamer widgets.
 
