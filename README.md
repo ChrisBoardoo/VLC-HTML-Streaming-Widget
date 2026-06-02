@@ -6,10 +6,15 @@ You're in the right place !
 With the multiplication of sources (Epidemic Sounds/ Suno / Local Rips) and the artists leaving major Music Streaming platforms 
 I'm proud to present "VLC HTML Streaming Widget" !
 
-A VLC Media Player extension that generates a **400 × 120 px HTML overlay** showing
-the currently playing track on a **spinning vinyl disc** — inspired by Spotify streamer widgets.
+A VLC Media Player extension that generates a **400 × 120 px HTML overlay** showing the currently playing track on a **spinning vinyl disc**.
 
 > Licensed under [GNU GPL v2](https://www.gnu.org/licenses/gpl-2.0.html)
+
+---
+
+## Support
+
+Drop a follow on https://twitch.tv/crosswax if you found this extension useful ;)
 
 ---
 
