@@ -14,7 +14,7 @@ A VLC Media Player extension that generates a **400 × 120 px HTML overlay** sho
 
 ## Support
 
-Drop a follow on https://twitch.tv/crosswax if you found this extension useful ;)
+Drop a follow, a prime or even a sub on https://twitch.tv/crosswax if you found this extension useful ! <3
 
 ---
 
