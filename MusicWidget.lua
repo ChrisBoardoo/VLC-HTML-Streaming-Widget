@@ -343,7 +343,7 @@ setInterval(poll, 1000);
 -- Extension state
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local VERSION = "1.6.3"
+local VERSION = "1.6.4"
 
 local dlg        = nil
 local lbl_status = nil
@@ -383,7 +383,7 @@ function descriptor()
         title        = "Music HTML Widget by CrossWax",
         version      = VERSION,
         author       = "CrossWax",
-        shortdesc    = "Now Playing HTML Widget (vinyl)",
+        shortdesc    = "Now Playing HTML Widget (by CrossWax)",
         description  = "Outputs a 400x120 px HTML widget with spinning vinyl effect.\n"
                     .. "Use as Browser Source in OBS for streaming overlays.\n"
                     .. "Output: %APPDATA%\\vlc\\MusicWidget\\widget.html\n"
@@ -509,7 +509,7 @@ function do_update_inner()
         arturl   = arturl,   -- raw VLC URL passed through for direct browser loading
     }, play_state)
 
-    local display = (artist ~= "") and (artist .. " \xe2\x80\x94 " .. title) or title
+    local display = (artist ~= "") and (artist .. " - " .. title) or title
     local art_hint
     if arturl ~= "" then
         art_hint = arturl:lower():sub(1,7) == "file://" and " [art\xe2\x9c\x93]"
@@ -924,7 +924,7 @@ function create_dialog()
     dlg = vlc.dialog("Music Widget")
     local r = 1
 
-    dlg:add_label("<b>Music HTML Widget</b>  v" .. VERSION .. "  \xe2\x80\x94  by CrossWax",
+    dlg:add_label("<b>Music HTML Widget</b>  v" .. VERSION .. "  -  by CrossWax",
                   1, r, 2, 1); r = r + 1
     dlg:add_label(" ", 1, r, 2, 1); r = r + 1
 
@@ -934,7 +934,7 @@ function create_dialog()
 
     dlg:add_label("<b>Widget folder</b>", 1, r, 1, 1)
     dlg:add_label(out_dir, 2, r, 1, 1); r = r + 1
-    dlg:add_label("  OBS: Add widget.html as Browser Source \xe2\x80\x94 400 \xc3\x97 120 px.",
+    dlg:add_label("  OBS: Add widget.html as Browser Source - 400x120 px.",
                   1, r, 2, 1); r = r + 1
     dlg:add_label(" ", 1, r, 2, 1); r = r + 1
 
@@ -949,7 +949,7 @@ function create_dialog()
     dlg:add_label("Text / title color (#rrggbb):", 1, r, 1, 1)
     inp_text = dlg:add_text_input(cfg.text_color, 2, r, 1, 1); r = r + 1
 
-    dlg:add_label("  Or drop background.png (400 \xc3\x97 120 px) in the widget folder.",
+    dlg:add_label("  Or drop background.png (400x120 px) in the widget folder.",
                   1, r, 2, 1); r = r + 1
     dlg:add_label(" ", 1, r, 2, 1); r = r + 1
 
