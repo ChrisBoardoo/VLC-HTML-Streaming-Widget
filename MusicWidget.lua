@@ -215,23 +215,30 @@ function injectScript(name, cb) {
 /* Colour config + background.png probe */
 function applyConfig(c) {
   if (!c) return;
-  var bar = document.getElementById('bar');
-  var ttl = document.getElementById('ttl');
-  var bg  = document.getElementById('bg');
+  var bar     = document.getElementById('bar');
+  var ttl     = document.getElementById('ttl');
+  var bg      = document.getElementById('bg');
+  var overlay = document.getElementById('overlay');
   if (c.accent) { bar.style.background = c.accent; document.getElementById('aname').style.color = c.accent; }
   if (c.text)   { ttl.style.color = c.text; }
+  if (c.transparent) {
+    bg.style.backgroundImage  = '';
+    bg.style.backgroundColor  = 'transparent';
+    overlay.style.background  = '';
+    return;
+  }
   /* Probe for background.png. Image() logs ERR_FILE_NOT_FOUND to the browser
      console when the file is absent — this is expected and harmless. fetch() from
      file:// is blocked by Chrome so it cannot be used as a silent alternative. */
   var probe = new Image();
   probe.onload = function() {
     bg.style.backgroundImage = "url('background.png?" + Date.now() + "')";
-    document.getElementById('overlay').style.background = 'rgba(0,0,0,.38)';
+    overlay.style.background = 'rgba(0,0,0,.38)';
   };
   probe.onerror = function() {
-    bg.style.backgroundImage  = '';
+    bg.style.backgroundImage = '';
     bg.style.backgroundColor = c.bg || '#1a1a2e';
-    document.getElementById('overlay').style.background = '';
+    overlay.style.background = '';
   };
   probe.src = 'background.png?' + Date.now();
 }
@@ -343,13 +350,14 @@ setInterval(poll, 1000);
 -- Extension state
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local VERSION = "1.6.4"
+local VERSION = "1.7.0"
 
-local dlg        = nil
-local lbl_status = nil
-local inp_bg     = nil
-local inp_accent = nil
-local inp_text   = nil
+local dlg            = nil
+local lbl_status     = nil
+local inp_bg         = nil
+local inp_accent     = nil
+local inp_text       = nil
+local chk_transparent = nil
 
 local out_dir = ""
 
@@ -372,6 +380,7 @@ local cfg = {
     bg_color     = "#1a1a2e",
     accent_color = "#1DB954",
     text_color   = "#ffffff",
+    transparent  = false,
 }
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -903,8 +912,9 @@ function write_config_js()
     local f = io.open(out_dir .. "config.js", "w")
     if not f then return end
     f:write(string.format(
-        'window.NPC={"bg":"%s","accent":"%s","text":"%s"};',
-        je(cfg.bg_color), je(cfg.accent_color), je(cfg.text_color)
+        'window.NPC={"bg":"%s","accent":"%s","text":"%s","transparent":%s};',
+        je(cfg.bg_color), je(cfg.accent_color), je(cfg.text_color),
+        cfg.transparent and "true" or "false"
     ))
     f:close()
 end
@@ -943,6 +953,8 @@ function create_dialog()
     dlg:add_label("Background color (#rrggbb):", 1, r, 1, 1)
     inp_bg = dlg:add_text_input(cfg.bg_color, 2, r, 1, 1); r = r + 1
 
+    chk_transparent = dlg:add_check_box("Transparent background (alpha layer — overrides bg color)", cfg.transparent, 1, r, 2, 1); r = r + 1
+
     dlg:add_label("Accent / artist color (#rrggbb):", 1, r, 1, 1)
     inp_accent = dlg:add_text_input(cfg.accent_color, 2, r, 1, 1); r = r + 1
 
@@ -961,13 +973,14 @@ end
 
 function destroy_dialog()
     if dlg then dlg:delete(); dlg = nil end
-    lbl_status = nil; inp_bg = nil; inp_accent = nil; inp_text = nil
+    lbl_status = nil; inp_bg = nil; inp_accent = nil; inp_text = nil; chk_transparent = nil
 end
 
 function on_apply_colors()
-    if inp_bg     then cfg.bg_color     = inp_bg:get_text()     end
-    if inp_accent then cfg.accent_color = inp_accent:get_text() end
-    if inp_text   then cfg.text_color   = inp_text:get_text()   end
+    if inp_bg         then cfg.bg_color     = inp_bg:get_text()         end
+    if inp_accent     then cfg.accent_color = inp_accent:get_text()     end
+    if inp_text       then cfg.text_color   = inp_text:get_text()       end
+    if chk_transparent then cfg.transparent = chk_transparent:get_checked() end
     write_config_js()
     set_status("Colors saved \xe2\x80\x94 reload the page (F5) to apply.")
 end
